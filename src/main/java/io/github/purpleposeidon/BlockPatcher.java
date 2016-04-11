@@ -2,26 +2,39 @@ package io.github.purpleposeidon;
 
 
 import com.google.common.base.Joiner;
+import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.Mod;
 import cpw.mods.fml.common.event.FMLMissingMappingsEvent;
 import cpw.mods.fml.common.event.FMLPostInitializationEvent;
 import cpw.mods.fml.common.event.FMLPreInitializationEvent;
+import cpw.mods.fml.common.eventhandler.EventPriority;
+import cpw.mods.fml.common.eventhandler.SubscribeEvent;
+import cpw.mods.fml.common.registry.ExistingSubstitutionException;
 import cpw.mods.fml.common.registry.FMLControlledNamespacedRegistry;
 import cpw.mods.fml.common.registry.GameData;
 import cpw.mods.fml.common.registry.GameRegistry;
 import net.minecraft.block.Block;
-import net.minecraft.block.BlockOre;
-import net.minecraft.block.BlockRailBase;
-import net.minecraft.block.material.Material;
-import net.minecraft.init.Blocks;
-import net.minecraft.item.Item;
+import net.minecraft.nbt.CompressedStreamTools;
+import net.minecraft.nbt.NBTTagCompound;
+import net.minecraft.util.StringUtils;
+import net.minecraft.world.MinecraftException;
+import net.minecraft.world.chunk.Chunk;
+import net.minecraft.world.chunk.storage.AnvilChunkLoader;
+import net.minecraft.world.chunk.storage.IChunkLoader;
+import net.minecraft.world.chunk.storage.RegionFile;
+import net.minecraft.world.storage.ISaveHandler;
+import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.common.config.ConfigCategory;
 import net.minecraftforge.common.config.Configuration;
 import net.minecraftforge.common.config.Property;
+import net.minecraftforge.event.world.ChunkEvent;
+import net.minecraftforge.event.world.WorldEvent;
 import org.apache.logging.log4j.Logger;
 
+import java.io.DataInputStream;
 import java.io.File;
-import java.lang.reflect.Method;
+import java.io.IOException;
+import java.util.Map;
 
 @Mod(modid = "blockpatcher", name = "BlockPatcher")
 public class BlockPatcher {
@@ -31,15 +44,64 @@ public class BlockPatcher {
     Configuration config;
     Logger log;
 
+    static final int MAX_BLOCK_ID = 4095;
+    IPatch[] transforms = new IPatch[MAX_BLOCK_ID];
+
     @Mod.EventHandler
     public void preinit(FMLPreInitializationEvent event) {
+        for (int i = 0; i < transforms.length; i++) transforms[i] = IPatch.NULL;
+
+        MinecraftForge.EVENT_BUS.register(this);
+        FMLCommonHandler.instance().bus().register(this);
         log = event.getModLog();
         configFile = event.getSuggestedConfigurationFile();
         config = new Configuration(configFile);
         block_patches = config.getCategory("blockPatches");
-        block_patches.setComment("Format example:\n\tS:\"minecraft:stone\"=\"minecraft:bedrock\"");
         item_patches = config.getCategory("itemPatches");
+        block_patches.setComment("Format:\nI:id=minecraft:blockname#optionalMetadata");
         config.save();
+        for (Map.Entry<String, Property> entry : block_patches.entrySet()) {
+            String idS = entry.getKey();
+            String repl = entry.getValue().getString();
+            int id = Integer.parseInt(idS);
+            transforms[id] = parsePatch(repl);
+        }
+    }
+
+    private IPatch parsePatch(String repl) {
+        if (StringUtils.isNullOrEmpty(repl)) return IPatch.NULL;
+        String parts[] = repl.split("#");
+        String id = parts[0];
+        int md = -1;
+        if (parts.length > 1) {
+            md = Integer.parseInt(parts[1]);
+        }
+        Block b = GameData.getBlockRegistry().getObject(id);
+        return new ReplaceWith(b, md);
+    }
+
+    static class ReplaceWith implements IPatch {
+        final Block to;
+        final int md;
+
+        public ReplaceWith(Block to, int md) {
+            this.to = to;
+            this.md = md;
+        }
+
+        public ReplaceWith(Block to) {
+            this.to = to;
+            this.md = -1;
+        }
+
+        @Override
+        public void apply(Chunk chunk, int cx, int y, int cz) {
+            int md = this.md;
+            if (md == -1) {
+                md = chunk.getBlockMetadata(cx, y, cz);
+            }
+            chunk.func_150807_a(cx, y, cz, to, md);
+        }
     }
 
     @Mod.EventHandler
@@ -52,14 +114,17 @@ public class BlockPatcher {
             log("Probably don't need to update the suggestions list. Delete that section of the config file to force an update.");
             return;
         }
-        log("Making a list of recommendations");
+        log("Making a list of recommended block patches");
         for (Object x : blockReg) {
             Block b = (Block) x;
             Block vanilla;
-            vanilla = getSuggestedBlock(b);
+            vanilla = ReplacementDefaults.getSuggestedBlock(b);
+            int id = blockReg.getId(b);
             String name = blockReg.getNameForObject(b);
             String replName = blockReg.getNameForObject(vanilla);
-            sug.put(name, new Property(name, replName, Property.Type.STRING));
+            Property prop = new Property(Integer.toString(id), replName, Property.Type.STRING);
+            prop.comment = name;
+            sug.put(name, prop);
         }
         config.save();
     }
@@ -70,7 +135,7 @@ public class BlockPatcher {
     }
 
     @Mod.EventHandler
-    public void replace(FMLMissingMappingsEvent event) {
+    public void replace(FMLMissingMappingsEvent event) throws ExistingSubstitutionException {
         for (FMLMissingMappingsEvent.MissingMapping missed : event.getAll()) {
             ConfigCategory src = missed.type == GameRegistry.Type.BLOCK ? block_patches : item_patches;
             Property got = src.get(missed.name);
@@ -78,127 +143,67 @@ public class BlockPatcher {
                 log("No config entry provided for replacing", missed.name);
                 continue;
             }
-            String replName = got.getString();
-            if (missed.type == GameRegistry.Type.BLOCK) {
-                Block repl = GameData.getBlockRegistry().getObject(replName);
-                if (repl == null || repl == Blocks.air) {
-                    log("Skipping defined replacement for", missed.name, "as it is boring (evaluates to:", "" + repl, ")");
-                    continue;
+            log("Will be replaced: ", missed.name);
+            missed.ignore();
+        }
+    }
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public void patchWorld(WorldEvent.Load event) throws IOException, MinecraftException {
+        if (event.world.isRemote) return;
+        doPatch(event);
+    }
+
+    private void doPatch(WorldEvent.Load event) throws IOException, MinecraftException {
+        ISaveHandler saveHandler = event.world.getSaveHandler();
+        IChunkLoader loader = saveHandler.getChunkLoader(event.world.provider);
+        File f = ((AnvilChunkLoader) loader).chunkSaveLocation;
+        f = new File(f, "region");
+        File[] files = f.listFiles();
+        if (files == null) return;
+        for (File regionName : files) {
+            if (!regionName.toString().endsWith(".mca")) continue;
+            log("Converting ", regionName.toString());
+            RegionFile rf = new RegionFile(regionName);
+            for (int rx = 0; rx < 32; rx++) {
+                for (int rz = 0; rz < 32; rz++) {
+                    if (!rf.chunkExists(rx, rz)) continue;
+                    log("    Processing regionchunk: " + rx + "," + rz);
+                    DataInputStream dis = rf.getChunkDataInputStream(rx, rz);
+                    NBTTagCompound tag = CompressedStreamTools.read(dis);
+                    dis.close();
+                    if (tag == null) continue;
+                    NBTTagCompound Level = tag.getCompoundTag("Level");
+                    if (Level == null) continue;
+                    int x = Level.getInteger("xPos");
+                    int z = Level.getInteger("zPos");
+                    Chunk chunk = loader.loadChunk(event.world, x, z);
+                    if (chunk == null) continue;
+                    MinecraftForge.EVENT_BUS.post(new ChunkEvent.Load(chunk));
+                    processChunk(chunk);
+                    if (!chunk.isModified) continue;
+                    loader.saveChunk(event.world, chunk);
+                    loader.saveExtraChunkData(event.world, chunk);
                 }
-                missed.remap(repl);
-            } else if (missed.type == GameRegistry.Type.ITEM) {
-                Item repl = GameData.getItemRegistry().getObject(replName);
-                if (repl == null) {
-                    log("Skipping defined replacement for", missed.name, "as it is boring (evaluates to:", "" + repl, ")");
-                    continue;
+            }
+
+        }
+    }
+
+    private void processChunk(Chunk chunk) {
+        for (int cx = 0; cx < 0x10; cx++) {
+            for (int cz = 0; cz < 0x10; cz++) {
+                for (int y = 0; y < 0x100; y++) {
+                    processLocation(chunk, cx, y, cz);
                 }
-                missed.remap(repl);
             }
         }
     }
 
-    private Block reflectionGet(Block b) {
-        Object ret = null;
-        try {
-            Method m = b.getClass().getMethod("blockPatcher$getReplacement");
-            ret = m.invoke(b);
-        } catch (Throwable t) {
-            // Yum!
-        }
-        return (Block) ret;
+    private void processLocation(Chunk chunk, int cx, int y, int cz) {
+        Block b = chunk.getBlock(cx, y, cz);
+        int id = GameData.getBlockRegistry().getId(b);
+        transforms[id].apply(chunk, cx, y, cz);
     }
 
-    private Block getSuggestedBlock(Block b) {
-        Material mat = b.getMaterial();
-        Block vanilla;
-        if (mat == Material.air) {
-            vanilla = Blocks.air;
-        } else if (mat == Material.grass) {
-            vanilla = Blocks.grass;
-        } else if (mat == Material.ground) {
-            vanilla = Blocks.dirt;
-        } else if (mat == Material.wood) {
-            vanilla = Blocks.log;
-        } else if (mat == Material.rock) {
-            vanilla = Blocks.stone;
-        } else if (mat == Material.iron) {
-            vanilla = Blocks.stone;
-        } else if (mat == Material.anvil) {
-            vanilla = Blocks.cobblestone;
-        } else if (mat == Material.water) {
-            vanilla = Blocks.water;
-        } else if (mat == Material.lava) {
-            vanilla = Blocks.lava;
-        } else if (mat == Material.leaves) {
-            vanilla = Blocks.leaves;
-        } else if (mat == Material.plants) {
-            vanilla = Blocks.air;
-        } else if (mat == Material.vine) {
-            vanilla = Blocks.air;
-        } else if (mat == Material.sponge) {
-            vanilla = Blocks.cobblestone;
-        } else if (mat == Material.cloth) {
-            vanilla = Blocks.wool;
-        } else if (mat == Material.fire) {
-            vanilla = Blocks.air;
-        } else if (mat == Material.sand) {
-            vanilla = Blocks.sand;
-        } else if (mat == Material.circuits) {
-            vanilla = Blocks.air;
-        } else if (mat == Material.carpet) {
-            vanilla = Blocks.carpet;
-        } else if (mat == Material.glass) {
-            vanilla = Blocks.stained_glass;
-        } else if (mat == Material.redstoneLight) {
-            vanilla = Blocks.air;
-        } else if (mat == Material.tnt) {
-            vanilla = Blocks.cobblestone;
-        } else if (mat == Material.coral) {
-            vanilla = Blocks.mossy_cobblestone;
-        } else if (mat == Material.ice) {
-            return Blocks.ice;
-        } else if (mat == Material.packedIce) {
-            return Blocks.packed_ice;
-        } else if (mat == Material.snow) {
-            vanilla = Blocks.snow;
-        } else if (mat == Material.craftedSnow) {
-            vanilla = Blocks.snow_layer;
-        } else if (mat == Material.cactus) {
-            vanilla = Blocks.air;
-        } else if (mat == Material.clay) {
-            vanilla = Blocks.stone;
-        } else if (mat == Material.gourd) {
-            vanilla = Blocks.air;
-        } else if (mat == Material.dragonEgg) {
-            vanilla = Blocks.air;
-        } else if (mat == Material.portal) {
-            return Blocks.air;
-        } else if (mat == Material.cake) {
-            vanilla = Blocks.air;
-        } else if (mat == Material.web) {
-            vanilla = Blocks.web;
-        } else {
-            if (b instanceof BlockOre) {
-                vanilla = Blocks.stone;
-            } else if (b.isOpaqueCube()) {
-                vanilla = Blocks.cobblestone;
-            } else {
-                vanilla = Blocks.air;
-            }
-        }
-        if (!b.isOpaqueCube()) {
-            vanilla = Blocks.air;
-        }
-        if (b instanceof BlockRailBase) {
-            b = Blocks.rail;
-        }
-        try {
-            if (b.getBlockHardness(null, 0, 0, 0) < 0) {
-                vanilla = Blocks.bedrock;
-            }
-        } catch (Throwable t) {
-            // swallow
-        }
-        return vanilla;
-    }
 }
