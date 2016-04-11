@@ -168,7 +168,6 @@ public class BlockPatcher {
             for (int rx = 0; rx < 32; rx++) {
                 for (int rz = 0; rz < 32; rz++) {
                     if (!rf.chunkExists(rx, rz)) continue;
-                    log("    Processing regionchunk: " + rx + "," + rz);
                     DataInputStream dis = rf.getChunkDataInputStream(rx, rz);
                     NBTTagCompound tag = CompressedStreamTools.read(dis);
                     dis.close();

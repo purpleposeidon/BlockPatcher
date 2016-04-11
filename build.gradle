@@ -18,7 +18,7 @@ buildscript {
 
 apply plugin: 'forge' // Try this some time: apply plugin: 'checkstyle'... well that might not work. But see Buildcraft.
 
-version = "1.7.10-0.1.1"
+version = "1.7.10-0.1.2"
 
 group = "com.github.purpleposeidon"
 archivesBaseName = "BlockPatcher"
