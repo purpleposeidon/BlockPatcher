@@ -1,0 +1,70 @@
+buildscript {
+    repositories {
+        mavenCentral()
+        maven {
+            name = "forge"
+            url = "http://files.minecraftforge.net/maven"
+        }
+        maven {
+            name = "sonatype"
+            url = "https://oss.sonatype.org/content/repositories/snapshots/"
+        }
+    }
+    dependencies {
+        // Can change this line to point to a specific version if ForgeGradle breaks itself
+        classpath 'net.minecraftforge.gradle:ForgeGradle:1.2-SNAPSHOT'
+    }
+}
+
+apply plugin: 'forge' // Try this some time: apply plugin: 'checkstyle'... well that might not work. But see Buildcraft.
+
+version = "1.7.10-0.1.0"
+
+group = "com.github.purpleposeidon"
+archivesBaseName = "BlockPatcher"
+
+
+minecraft {
+    version = "1.7.10-10.13.2.1230"
+    assetDir = "eclipse/assets"
+}
+
+// Target java 1.6
+targetCompatibility = '1.6'
+sourceCompatibility = '1.6'
+
+
+processResources {
+    // this will ensure that this task is redone when the versions change.
+    inputs.property "version", project.version
+    inputs.property "mcversion", project.minecraft.version
+
+    // replace stuff in mcmod.info, nothing else
+    from(sourceSets.main.resources.srcDirs) {
+        include 'mcmod.info'
+        
+        // replace version and mcversion
+        expand 'version':(project.version.split("-")[1]), 'mcversion':project.minecraft.version
+    }
+        
+    // copy everything else, thats not the mcmod.info
+    from(sourceSets.main.resources.srcDirs) {
+        exclude 'mcmod.info'
+    }
+}
+
+jar {
+    // manifest {
+    //     attributes("FMLCorePlugin": "factorization.coremod.LoadingPlugin",
+    //                "FMLCorePluginContainsFMLMod": "true")
+    // }
+}
+
+task deobfJar(type: Jar) {
+    from sourceSets.main.output
+    from sourceSets.api.output
+    classifier = 'dev'
+    
+    // You'd copy stuff from the 'jar' section here
+}
+

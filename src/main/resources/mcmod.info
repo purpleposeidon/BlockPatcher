@@ -1,0 +1,18 @@
+[
+ {
+  "authorList": [
+   "neptunepink"
+  ], 
+  "credits": "", 
+  "dependencies": [], 
+  "description": "Makes it safer to remove mods.", 
+  "mcversion": "${mcversion}", 
+  "modid": "blockpatcher", 
+  "name": "BlockPatcher", 
+  "parent": "", 
+  "screenshots": [], 
+  "updateUrl": "", 
+  "url": "http://github.com/purpleposeidon/BlockPatcher/", 
+  "version": "${version}"
+ }
+]
