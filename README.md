@@ -2,6 +2,8 @@ BLOCK PATCHER
 =============
 Makes it safer to remove mods.
 
+**WARNING: Doesn't work.**
+
 Usage
 -----
 0. Have mods you want to remove.
